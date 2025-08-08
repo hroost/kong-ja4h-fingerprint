@@ -24,6 +24,13 @@ local schema = {
               elements = { type = "string" },
               description = "List of headers to ignore"
           }},
+          { trim_xff_header_count = {
+              type = "integer",
+              default = 0,
+              description = "Number of X-Forwarded-For IPs to trim " ..
+                            "(from the right side). In case of reverse-proxy " ..
+                            "in front of the Kong"
+          }},
           { include_raw = {
               type = "boolean",
               default = false,

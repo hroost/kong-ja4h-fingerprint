@@ -9,7 +9,7 @@ local table = table
 
 local plugin = {
   PRIORITY = 1000,
-  VERSION = "0.1.0",
+  VERSION = "0.2.0",
 }
 
 -- Pre-compile patterns for better performance
@@ -27,12 +27,66 @@ local function starts_with(value, start)
   return type(value) == 'string' and type(start) == 'string' and string.sub(value, 1, #start) == start
 end
 
+-- Trim X-Forwarded-For header by removing specified number of IPs from the right side
+local function trim_xff_header(xff_value, trim_count)
+  if not xff_value or trim_count <= 0 then
+    return xff_value
+  end
+
+  -- Split by comma, handling both "," and ", " separators
+  local ips = {}
+  for ip in string.gmatch(xff_value, "([^,]+)") do
+    -- Trim whitespace from each IP
+    ip = string.match(ip, "^%s*(.-)%s*$")
+    if ip and ip ~= "" then
+      table.insert(ips, ip)
+    end
+  end
+
+  -- Remove specified number of IPs from the right side
+  local total_ips = #ips
+  local keep_count = total_ips - trim_count
+
+  if keep_count <= 0 then
+    -- If we're trimming more IPs than available, return empty string
+    return nil
+  end
+
+  -- Reconstruct the header with remaining IPs
+  local trimmed_ips = {}
+  for i = 1, keep_count do
+    table.insert(trimmed_ips, ips[i])
+  end
+
+  return table.concat(trimmed_ips, ",")
+end
+
 -- Collect all request data once for performance
 local function collect_request_data(conf)
   local data = {
     method = kong.request.get_method(),
     headers = kong.request.get_headers(),
   }
+
+  -- Handle X-Forwarded-For trimming if configured
+  if conf.trim_xff_header_count and conf.trim_xff_header_count > 0 then
+    local xff_header = data.headers["x-forwarded-for"]
+    if xff_header then
+      local trimmed_xff = trim_xff_header(xff_header, conf.trim_xff_header_count)
+      -- Create a copy of headers to avoid modifying the original
+      local modified_headers = {}
+      for k, v in pairs(data.headers) do
+        modified_headers[k] = v
+      end
+      -- Update the X-Forwarded-For header with trimmed value
+      if trimmed_xff then
+        modified_headers["x-forwarded-for"] = trimmed_xff
+      else
+        modified_headers["x-forwarded-for"] = nil
+      end
+      data.headers = modified_headers
+    end
+  end
 
   -- Get HTTP version from custom header or Kong's native detection
   if conf and conf.http_version_custom_header then
@@ -258,7 +312,3 @@ function plugin:access(conf)
 end
 
 return plugin
-
-
--- #TODO
--- x-forwarded-for will contain GLB IPs and should be stripped for accurate fingerprinting
