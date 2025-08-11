@@ -12,7 +12,7 @@ local plugin = {
   VERSION = "0.2.0",
 }
 
--- Pre-compile patterns for better performance
+-- Pre-compile patterns
 local COOKIE_PATTERN = "[^;]+"
 local WHITESPACE_PATTERN = "^%s*"
 local COOKIE_PAIR_PATTERN = "([^=]+)=?(.*)"
@@ -61,7 +61,7 @@ local function trim_xff_header(xff_value, trim_count)
   return table.concat(trimmed_ips, ",")
 end
 
--- Collect all request data once for performance
+-- Collect all request data once
 local function collect_request_data(conf)
   local data = {
     method = kong.request.get_method(),
@@ -88,10 +88,10 @@ local function collect_request_data(conf)
     end
   end
 
-  -- Get HTTP version from custom header or Kong's native detection
-  if conf and conf.http_version_custom_header then
-    data.http_version_raw = data.headers[conf.http_version_custom_header]
-    data.http_version = kong.request.get_http_version() -- fallback
+  -- Get HTTP version from custom header or from Kong's request
+  if conf and conf.http_version_custom_header and conf.http_version_custom_header ~= '' then
+    data.http_version_custom_header = data.headers[string.lower(conf.http_version_custom_header)]
+    data.http_version = kong.request.get_http_version()
   else
     data.http_version = kong.request.get_http_version()
   end
@@ -117,8 +117,8 @@ local function http_version(request_data)
   local version
 
   -- Use custom header value if available, otherwise use Kong's detection
-  if request_data.http_version_raw then
-    local version_str = string.upper(request_data.http_version_raw)
+  if request_data.http_version_custom_header then
+    local version_str = string.upper(request_data.http_version_custom_header)
     if string.find(version_str, "HTTP/3") or string.find(version_str, "^3%.0") then
       version = 3.0
     elseif string.find(version_str, "HTTP/2") or string.find(version_str, "^2%.0") then
@@ -232,7 +232,7 @@ local function truncated_sha256(value)
   return string.sub(string.lower(str.to_hex(hash)), 1, 12)
 end
 
--- Main fingerprinting function (heavily optimized)
+-- Main fingerprinting function
 local function generate_ja4h_fingerprint(conf)
   -- Collect all request data once
   local request_data = collect_request_data(conf)
@@ -264,7 +264,6 @@ local function generate_ja4h_fingerprint(conf)
   local p8 = truncated_sha256(p8_pretty)
   local p9 = truncated_sha256(p9_pretty)
 
-  -- Optimized string building using table.concat for better performance
   local fingerprint_raw_parts = {
     p1, '_', p2, '_', p3, '_', p4, '_', p5, '_', p6, '_',
     p7_pretty, '_', p8_pretty, '_', p9_pretty
