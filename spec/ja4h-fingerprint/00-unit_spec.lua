@@ -32,6 +32,7 @@ _G.test_response_headers = {}
 _G.test_headers = {}
 _G.test_method = "GET"
 _G.test_http_version = 1.1
+_G.test_raw_headers = ""
 
 _G.kong = {
   ctx = {
@@ -62,6 +63,14 @@ _G.kong = {
   },
 }
 
+_G.ngx = {
+  req = {
+    raw_header = function()
+      return _G.test_raw_headers
+    end,
+  },
+}
+
 local function load_handler()
   local handler_path = "kong.plugins." .. PLUGIN_NAME .. ".handler"
   package.loaded[handler_path] = nil
@@ -74,6 +83,7 @@ local function reset_state()
   _G.test_headers = {}
   _G.test_method = "GET"
   _G.test_http_version = 1.1
+  _G.test_raw_headers = ""
   _G.kong.ctx.plugin = {}
 end
 
@@ -96,6 +106,106 @@ local function base_config(overrides)
   return config
 end
 
+local function clone_array(values)
+  local copy = {}
+  for i = 1, #values do
+    copy[i] = values[i]
+  end
+  return copy
+end
+
+local function build_headers_from_order(order)
+  local headers = {}
+  for i = 1, #order do
+    headers[order[i]] = "value-" .. tostring(i)
+  end
+  return headers
+end
+
+local function collect_pairs_order(headers)
+  local names = {}
+  for name, _ in pairs(headers) do
+    names[#names + 1] = name
+  end
+  return names
+end
+
+local function join_names(names)
+  return table.concat(names, ",")
+end
+
+local function build_raw_headers(order)
+  local lines = {}
+  for i = 1, #order do
+    lines[i] = order[i] .. ": value-" .. tostring(i)
+  end
+  return table.concat(lines, "\r\n") .. "\r\n"
+end
+
+local function next_permutation(values)
+  local i = #values - 1
+  while i > 0 and values[i] >= values[i + 1] do
+    i = i - 1
+  end
+
+  if i == 0 then
+    return false
+  end
+
+  local j = #values
+  while values[j] <= values[i] do
+    j = j - 1
+  end
+
+  values[i], values[j] = values[j], values[i]
+
+  local left = i + 1
+  local right = #values
+  while left < right do
+    values[left], values[right] = values[right], values[left]
+    left = left + 1
+    right = right - 1
+  end
+
+  return true
+end
+
+local function find_pairs_order_mismatch()
+  local order = {
+    "x-h01",
+    "x-h02",
+    "x-h03",
+    "x-h04",
+    "x-h05",
+    "x-h06",
+    "x-h07",
+    "x-h08",
+    "x-h09",
+    "x-h10",
+  }
+
+  for _ = 1, 200 do
+    local headers = build_headers_from_order(order)
+    local pairs_order = collect_pairs_order(headers)
+
+    if join_names(order) ~= join_names(pairs_order) then
+      return {
+        request_order = clone_array(order),
+        pairs_order = pairs_order,
+        headers = headers,
+      }
+    end
+
+    if not next_permutation(order) then
+      break
+    end
+  end
+
+  error("unable to find a 10-header case where pairs() diverges from request order on this runtime")
+end
+
+local PAIRS_ORDER_MISMATCH = find_pairs_order_mismatch()
+
 describe(PLUGIN_NAME .. ": unit tests", function()
   local handler
 
@@ -114,6 +224,7 @@ describe(PLUGIN_NAME .. ": unit tests", function()
       ["referer"] = "https://example.test",
       ["user-agent"] = "curl/8.0",
     }
+    _G.test_raw_headers = "Accept-Language: en-US,en;q=0.9\r\nCookie: foo=bar; baz=qux\r\nReferer: https://example.test\r\nUser-Agent: curl/8.0\r\n"
 
     handler:access(base_config())
 
@@ -121,41 +232,45 @@ describe(PLUGIN_NAME .. ": unit tests", function()
     assert.is_truthy(_G.kong.ctx.plugin.ja4h_fingerprint)
   end)
 
-  it("ignores multi-value Cookie headers instead of crashing", function()
+  it("merges repeated Cookie headers instead of crashing", function()
     _G.test_headers = {
       ["cookie"] = { "foo=bar", "baz=qux" },
       ["user-agent"] = "curl/8.0",
     }
+    _G.test_raw_headers = "Cookie: foo=bar\r\nCookie: baz=qux\r\nUser-Agent: curl/8.0\r\n"
 
     handler:access(base_config({ include_raw = true }))
 
     assert.is_string(_G.test_service_headers["X-JA4H-Fingerprint"])
-    assert.matches("_000000000000_000000000000$", _G.test_service_headers["X-JA4H-Fingerprint"])
+    assert.matches("^ge11cn", _G.test_service_headers["X-JA4H-Fingerprint"])
     assert.is_string(_G.test_service_headers["X-JA4H-Fingerprint-Raw"])
+    assert.matches("_baz,foo_baz=qux,foo=bar$", _G.test_service_headers["X-JA4H-Fingerprint-Raw"])
   end)
 
-  it("ignores multi-value Accept-Language headers instead of crashing", function()
+  it("uses the first Accept-Language header when repeated", function()
     _G.test_headers = {
       ["accept-language"] = { "en-US", "nl-NL" },
       ["user-agent"] = "curl/8.0",
     }
+    _G.test_raw_headers = "Accept-Language: en-US\r\nAccept-Language: nl-NL\r\nUser-Agent: curl/8.0\r\n"
 
     handler:access(base_config())
 
     assert.is_string(_G.test_service_headers["X-JA4H-Fingerprint"])
-    assert.matches("20000_", _G.test_service_headers["X-JA4H-Fingerprint"], 1, true)
+    assert.matches("3enus_", _G.test_service_headers["X-JA4H-Fingerprint"], 1, true)
   end)
 
-  it("ignores multi-value custom HTTP version headers instead of crashing", function()
+  it("uses the first custom HTTP version header when repeated", function()
     _G.test_headers = {
       ["x-http-version"] = { "HTTP/2", "HTTP/1.1" },
       ["user-agent"] = "curl/8.0",
     }
     _G.test_http_version = 1.1
+    _G.test_raw_headers = "X-HTTP-Version: HTTP/2\r\nX-HTTP-Version: HTTP/1.1\r\nUser-Agent: curl/8.0\r\n"
 
     handler:access(base_config({ http_version_custom_header = "X-HTTP-Version" }))
 
-    assert.matches("^ge11", _G.test_service_headers["X-JA4H-Fingerprint"])
+    assert.matches("^ge20", _G.test_service_headers["X-JA4H-Fingerprint"])
   end)
 
   it("ignores multi-value X-Forwarded-For headers when trimming is enabled", function()
@@ -163,6 +278,7 @@ describe(PLUGIN_NAME .. ": unit tests", function()
       ["x-forwarded-for"] = { "1.1.1.1", "2.2.2.2" },
       ["user-agent"] = "curl/8.0",
     }
+    _G.test_raw_headers = "X-Forwarded-For: 1.1.1.1\r\nX-Forwarded-For: 2.2.2.2\r\nUser-Agent: curl/8.0\r\n"
 
     handler:access(base_config({ trim_xff_header_count = 1 }))
 
@@ -174,9 +290,55 @@ describe(PLUGIN_NAME .. ": unit tests", function()
       ["x-forwarded-for"] = "1.1.1.1, 2.2.2.2, 3.3.3.3",
       ["user-agent"] = "curl/8.0",
     }
+    _G.test_raw_headers = "X-Forwarded-For: 1.1.1.1, 2.2.2.2, 3.3.3.3\r\nUser-Agent: curl/8.0\r\n"
 
     handler:access(base_config({ include_raw = true, trim_xff_header_count = 1 }))
 
     assert.matches("x-forwarded-for,user-agent", _G.test_service_headers["X-JA4H-Fingerprint-Raw"], 1, true)
+  end)
+
+  it("uses raw request header order for JA4H_b", function()
+    _G.test_headers = {
+      ["x-test-b"] = "two",
+      ["x-test-a"] = "one",
+    }
+    _G.test_raw_headers = "X-Test-A: one\r\nX-Test-B: two\r\n"
+
+    handler:access(base_config({ include_raw = true }))
+
+    assert.matches("_x-test-a,x-test-b_", _G.test_service_headers["X-JA4H-Fingerprint-Raw"], 1, true)
+  end)
+
+  it("shows pairs-based header iteration diverges from request order for larger header sets", function()
+    local mismatch = PAIRS_ORDER_MISMATCH
+    local request_order_string = join_names(mismatch.request_order)
+    local pairs_order_string = join_names(mismatch.pairs_order)
+
+    assert.not_equals(request_order_string, pairs_order_string)
+    assert.equals(10, #mismatch.request_order)
+    assert.equals(10, #mismatch.pairs_order)
+    assert.equals(request_order_string, join_names(mismatch.request_order))
+    assert.equals(pairs_order_string, join_names(mismatch.pairs_order))
+  end)
+
+  it("uses raw request order instead of pairs order for JA4H_b with 10 headers", function()
+    local mismatch = PAIRS_ORDER_MISMATCH
+    _G.test_headers = mismatch.headers
+    _G.test_raw_headers = build_raw_headers(mismatch.request_order)
+
+    handler:access(base_config({ include_raw = true }))
+
+    assert.matches(
+      "_" .. join_names(mismatch.request_order) .. "_",
+      _G.test_service_headers["X-JA4H-Fingerprint-Raw"],
+      1,
+      true
+    )
+    assert.not_matches(
+      "_" .. join_names(mismatch.pairs_order) .. "_",
+      _G.test_service_headers["X-JA4H-Fingerprint-Raw"],
+      1,
+      true
+    )
   end)
 end)
