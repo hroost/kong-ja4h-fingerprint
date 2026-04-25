@@ -1,7 +1,7 @@
 package = "kong-plugin-ja4h-fingerprint"
 version = "0.2.0-1"
 source = {
-  url = "git://github.com/hroost/kong-ja4h-fingerprint",
+  url = "https://github.com/hroost/kong-ja4h-fingerprint",
 }
 description = {
   summary = "Kong plugin for generating JA4H HTTP client fingerprints",

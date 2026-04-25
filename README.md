@@ -19,12 +19,13 @@ Where:
 - `JA4H_b` is derived from `ngx.req.raw_header(true)` when available, not from iterating `kong.request.get_headers()` with `pairs()`. This is intentional: Lua table iteration does not preserve request header order, while JA4H expects header names in the order they appeared on the wire.
 - The plugin parses raw request headers in a single ordered pass when OpenResty exposes them. This is the preferred path in Kong/OpenResty.
 - Repeated `Cookie:` headers are merged and then parsed together.
-- Repeated singleton-style headers such as `Accept-Language`, `Referer`, and the configured custom HTTP-version header use first-occurrence semantics on the raw-header path.
+- Repeated singleton-style headers such as `Accept-Language`, `Referer`, and the configured custom HTTP-version header use first-occurrence semantics in both the raw-header path and the fallback `get_headers()` path.
+- `ignore_headers` entries are normalized case-insensitively, and `_` / `-` differences are treated as equivalent.
 - If raw request headers are unavailable, the plugin falls back to `kong.request.get_headers()`. That fallback remains functional, but it cannot guarantee spec-accurate request-header ordering for `JA4H_b`.
 
 ## Configuration
 
-Supported plugin config fields are defined in [schema.lua](/Users/hroost/Projects/kong-ja4h-fingerprint/kong/plugins/ja4h-fingerprint/schema.lua:1):
+Supported plugin config fields are defined in [schema.lua](kong/plugins/ja4h-fingerprint/schema.lua):
 
 - `header_name`: upstream header used to store the JA4H fingerprint
 - `http_version_custom_header`: optional header containing the effective HTTP version
@@ -35,7 +36,7 @@ Supported plugin config fields are defined in [schema.lua](/Users/hroost/Project
 
 ## Running In Kong
 
-The repository contains a LuaRocks package file: [kong-plugin-ja4h-fingerprint-0.2.0-1.rockspec](/Users/hroost/Projects/kong-ja4h-fingerprint/kong-plugin-ja4h-fingerprint-0.2.0-1.rockspec:1).
+The repository contains a LuaRocks package file: [kong-plugin-ja4h-fingerprint-0.2.0-1.rockspec](kong-plugin-ja4h-fingerprint-0.2.0-1.rockspec).
 
 A typical local flow is:
 
@@ -67,11 +68,11 @@ That said, this repository is packaged as a Kong plugin, not as a standalone Ope
 
 ## Tests
 
-Tests live in [spec/ja4h-fingerprint/00-unit_spec.lua](/Users/hroost/Projects/kong-ja4h-fingerprint/spec/ja4h-fingerprint/00-unit_spec.lua:1).
+Tests live in [spec/ja4h-fingerprint/00-unit_spec.lua](spec/ja4h-fingerprint/00-unit_spec.lua).
 
 The repo includes minimal Pongo and Busted scaffolding:
-- [.pongo/pongorc](/Users/hroost/Projects/kong-ja4h-fingerprint/.pongo/pongorc:1)
-- [.busted](/Users/hroost/Projects/kong-ja4h-fingerprint/.busted:1)
+- [.pongo/pongorc](.pongo/pongorc)
+- [.busted](.busted)
 
 The test suite is intended to be run with Pongo in DB-less mode. Typical flow:
 
@@ -90,6 +91,8 @@ The tests cover:
 - repeated-header hardening
 - ordered `JA4H_b` construction from raw request headers
 - proof that plain Lua table iteration is not suitable for preserving request header order
+
+The `pairs()`-divergence proof is opportunistic: it demonstrates the ordering problem when the current Lua runtime exposes a mismatch for the explored header set, while the core ordered-header tests do not depend on that mismatch existing.
 
 ## License
 
