@@ -341,4 +341,99 @@ describe(PLUGIN_NAME .. ": unit tests", function()
       true
     )
   end)
+
+  it("adds downstream response debug headers when enabled", function()
+    _G.test_headers = {
+      ["user-agent"] = "curl/8.0",
+    }
+    _G.test_raw_headers = "User-Agent: curl/8.0\r\n"
+
+    handler:access(base_config({
+      include_raw = false,
+      response_debug_headers = true,
+    }))
+
+    assert.is_string(_G.test_response_headers["X-JA4H-Fingerprint"])
+    assert.is_string(_G.test_response_headers["X-JA4H-Fingerprint-Raw"])
+  end)
+
+  it("falls back to kong.request.get_headers when raw headers are unavailable", function()
+    _G.test_headers = {
+      ["accept-language"] = "en-US,en;q=0.9",
+      ["cookie"] = "foo=bar",
+      ["user-agent"] = "curl/8.0",
+    }
+    _G.test_raw_headers = ""
+
+    local original_raw_header = _G.ngx.req.raw_header
+    _G.ngx.req.raw_header = function()
+      error("raw_header unavailable")
+    end
+
+    handler:access(base_config({ include_raw = true }))
+
+    _G.ngx.req.raw_header = original_raw_header
+
+    assert.is_string(_G.test_service_headers["X-JA4H-Fingerprint"])
+    assert.is_string(_G.test_service_headers["X-JA4H-Fingerprint-Raw"])
+  end)
+
+  it("excludes ignored headers from header count and JA4H_b", function()
+    _G.test_headers = {
+      ["x-ignore-me"] = "one",
+      ["x-keep-me"] = "two",
+      ["user-agent"] = "curl/8.0",
+    }
+    _G.test_raw_headers = "X-Ignore-Me: one\r\nX-Keep-Me: two\r\nUser-Agent: curl/8.0\r\n"
+
+    handler:access(base_config({
+      include_raw = true,
+      ignore_headers = { "x-ignore-me" },
+    }))
+
+    assert.matches("20000_", _G.test_service_headers["X-JA4H-Fingerprint"], 1, true)
+    assert.matches("_x-keep-me,user-agent_", _G.test_service_headers["X-JA4H-Fingerprint-Raw"], 1, true)
+    assert.not_matches("_x-ignore-me,x-keep-me,user-agent_", _G.test_service_headers["X-JA4H-Fingerprint-Raw"], 1, true)
+  end)
+
+  it("removes X-Forwarded-For from JA4H when trimming drops all hops", function()
+    _G.test_headers = {
+      ["x-forwarded-for"] = "1.1.1.1",
+      ["user-agent"] = "curl/8.0",
+    }
+    _G.test_raw_headers = "X-Forwarded-For: 1.1.1.1\r\nUser-Agent: curl/8.0\r\n"
+
+    handler:access(base_config({
+      include_raw = true,
+      trim_xff_header_count = 1,
+    }))
+
+    assert.matches("10000_", _G.test_service_headers["X-JA4H-Fingerprint"], 1, true)
+    assert.matches("_user-agent_", _G.test_service_headers["X-JA4H-Fingerprint-Raw"], 1, true)
+    assert.not_matches("_x-forwarded-for,user-agent_", _G.test_service_headers["X-JA4H-Fingerprint-Raw"], 1, true)
+  end)
+
+  it("reuses fingerprint from kong.ctx.plugin on repeated access", function()
+    _G.test_headers = {
+      ["user-agent"] = "curl/8.0",
+    }
+    _G.test_raw_headers = "User-Agent: curl/8.0\r\n"
+
+    handler:access(base_config({ include_raw = true }))
+
+    local first_fingerprint = _G.test_service_headers["X-JA4H-Fingerprint"]
+    local first_raw = _G.test_service_headers["X-JA4H-Fingerprint-Raw"]
+
+    _G.test_service_headers = {}
+    _G.test_headers = {
+      ["user-agent"] = "different-agent",
+      ["x-extra"] = "extra",
+    }
+    _G.test_raw_headers = "User-Agent: different-agent\r\nX-Extra: extra\r\n"
+
+    handler:access(base_config({ include_raw = true }))
+
+    assert.equals(first_fingerprint, _G.test_service_headers["X-JA4H-Fingerprint"])
+    assert.equals(first_raw, _G.test_service_headers["X-JA4H-Fingerprint-Raw"])
+  end)
 end)
