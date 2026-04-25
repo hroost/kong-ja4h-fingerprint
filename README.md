@@ -36,12 +36,12 @@ Supported plugin config fields are defined in [schema.lua](kong/plugins/ja4h-fin
 
 ## Running In Kong
 
-The repository contains a LuaRocks package file: [kong-plugin-ja4h-fingerprint-0.2.0-1.rockspec](kong-plugin-ja4h-fingerprint-0.2.0-1.rockspec).
+The repository contains a LuaRocks package file: [kong-plugin-ja4h-fingerprint-0.3.0-1.rockspec](kong-plugin-ja4h-fingerprint-0.3.0-1.rockspec).
 
 A typical local flow is:
 
 ```bash
-luarocks make kong-plugin-ja4h-fingerprint-0.2.0-1.rockspec
+luarocks make kong-plugin-ja4h-fingerprint-0.3.0-1.rockspec
 export KONG_PLUGINS=bundled,ja4h-fingerprint
 kong start
 ```
@@ -96,8 +96,11 @@ The `pairs()`-divergence proof is opportunistic: it demonstrates the ordering pr
 
 ## License
 
-This project is licensed under the MIT license.
+The source code in this repository is provided under the MIT license. See [LICENSE](LICENSE).
 
-The JA4H algorithm itself has usage restrictions and licensing nuances from FoxIO. See:
+This does not waive or replace the licensing terms that apply to the JA4H / JA4+ algorithm itself. Use of software that implements JA4H may still be subject to FoxIO License 1.1 and any related commercial or OEM licensing requirements from FoxIO.
+
+See also:
+- [NOTICE](NOTICE)
 - [FoxIO-LLC/ja4 licensing](https://github.com/FoxIO-LLC/ja4?tab=readme-ov-file#licensing)
 - [JA4+ FoxIO License](https://github.com/FoxIO-LLC/ja4/blob/main/LICENSE)

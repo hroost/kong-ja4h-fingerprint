@@ -10,7 +10,7 @@ local ngx = ngx
 
 local plugin = {
   PRIORITY = 1000,
-  VERSION = "0.2.0",
+  VERSION = "0.3.0",
 }
 
 -- Pre-compile patterns
@@ -96,7 +96,7 @@ local function trim_xff_header(xff_value, trim_count)
     -- Trim whitespace from each IP
     local trimmed_ip = string.match(ip, "^%s*(.-)%s*$")
     if trimmed_ip and trimmed_ip ~= "" then
-      table.insert(ips, trimmed_ip)
+      ips[#ips + 1] = trimmed_ip
     end
   end
 
@@ -112,7 +112,7 @@ local function trim_xff_header(xff_value, trim_count)
   -- Reconstruct the header with remaining IPs
   local trimmed_ips = {}
   for i = 1, keep_count do
-    table.insert(trimmed_ips, ips[i])
+    trimmed_ips[i] = ips[i]
   end
 
   return table.concat(trimmed_ips, ",")

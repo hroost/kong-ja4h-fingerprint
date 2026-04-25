@@ -1,0 +1,12 @@
+This repository's source code is made available under the MIT license; see LICENSE.
+
+However, this project implements the JA4H / JA4+ fingerprinting approach described by FoxIO.
+Use of the implemented algorithm may be subject to FoxIO License 1.1 and any related
+commercial, monetization, or OEM licensing requirements imposed by FoxIO.
+
+You are responsible for determining whether your intended use of JA4H / JA4+ requires
+separate permission or licensing from FoxIO.
+
+References:
+- https://github.com/FoxIO-LLC/ja4?tab=readme-ov-file#licensing
+- https://github.com/FoxIO-LLC/ja4/blob/main/LICENSE

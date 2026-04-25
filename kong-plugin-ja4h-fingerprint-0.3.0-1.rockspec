@@ -1,5 +1,5 @@
 package = "kong-plugin-ja4h-fingerprint"
-version = "0.2.0-1"
+version = "0.3.0-1"
 source = {
   url = "https://github.com/hroost/kong-ja4h-fingerprint",
 }
@@ -10,7 +10,7 @@ description = {
       method and headers, and forwards it to upstream services.
   ]],
   homepage = "https://github.com/hroost/kong-ja4h-fingerprint",
-  license = "MIT",
+  license = "MIT (repository code only; JA4H algorithm usage subject to FoxIO License 1.1)",
 }
 dependencies = {
   "lua >= 5.1",
