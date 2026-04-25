@@ -22,6 +22,10 @@ local NON_ALPHANUM_PATTERN = '%W'
 local EMPTY_HASH = '000000000000'
 local DEFAULT_LANG = '0000'
 
+local function is_header_string(value)
+  return type(value) == "string" and value ~= ""
+end
+
 -- Check if string starts with specific prefix
 local function starts_with(value, start)
   return type(value) == 'string' and type(start) == 'string' and string.sub(value, 1, #start) == start
@@ -29,7 +33,7 @@ end
 
 -- Trim X-Forwarded-For header by removing specified number of IPs from the right side
 local function trim_xff_header(xff_value, trim_count)
-  if not xff_value or trim_count <= 0 then
+  if not is_header_string(xff_value) or trim_count <= 0 then
     return xff_value
   end
 
@@ -37,9 +41,9 @@ local function trim_xff_header(xff_value, trim_count)
   local ips = {}
   for ip in string.gmatch(xff_value, "([^,]+)") do
     -- Trim whitespace from each IP
-    ip = string.match(ip, "^%s*(.-)%s*$")
-    if ip and ip ~= "" then
-      table.insert(ips, ip)
+    local trimmed_ip = string.match(ip, "^%s*(.-)%s*$")
+    if trimmed_ip and trimmed_ip ~= "" then
+      table.insert(ips, trimmed_ip)
     end
   end
 
@@ -90,7 +94,10 @@ local function collect_request_data(conf)
 
   -- Get HTTP version from custom header or from Kong's request
   if conf and conf.http_version_custom_header and conf.http_version_custom_header ~= '' then
-    data.http_version_custom_header = data.headers[string.lower(conf.http_version_custom_header)]
+    local custom_header_value = data.headers[string.lower(conf.http_version_custom_header)]
+    if is_header_string(custom_header_value) then
+      data.http_version_custom_header = custom_header_value
+    end
     data.http_version = kong.request.get_http_version()
   else
     data.http_version = kong.request.get_http_version()
@@ -181,7 +188,7 @@ end
 -- Get first 4 characters of accept-language header (alphanumeric only)
 local function accept_lang_beg(headers)
   local al = headers["accept-language"]
-  if not al then
+  if not is_header_string(al) then
     return DEFAULT_LANG
   end
 
@@ -195,7 +202,7 @@ end
 
 -- Parse cookies and get both sorted names and name=value pairs (combined for efficiency)
 local function parse_cookies(cookie_header)
-  if not cookie_header then
+  if not is_header_string(cookie_header) then
     return '', ''
   end
 
