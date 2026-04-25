@@ -6,10 +6,11 @@ local str = require "resty.string"
 local kong = kong
 local string = string
 local table = table
+local ngx = ngx
 
 local plugin = {
   PRIORITY = 1000,
-  VERSION = "0.2.0",
+  VERSION = "0.3.0",
 }
 
 -- Pre-compile patterns
@@ -21,6 +22,62 @@ local NON_ALPHANUM_PATTERN = '%W'
 -- Constants for performance
 local EMPTY_HASH = '000000000000'
 local DEFAULT_LANG = '0000'
+local HEADER_LINE_PATTERN = "([^\r\n]+)"
+local HEADER_NAME_PATTERN = "^([^:]+):%s*(.*)$"
+
+local function is_header_string(value)
+  return type(value) == "string" and value ~= ""
+end
+
+local function get_raw_request_headers()
+  if ngx and ngx.req and ngx.req.raw_header then
+    local ok, raw_headers = pcall(ngx.req.raw_header, true)
+    if ok and is_header_string(raw_headers) then
+      return raw_headers
+    end
+  end
+end
+
+local function normalize_header_name(header_name)
+  return string.lower(header_name):gsub("_", "-")
+end
+
+local function first_header_value(value)
+  if is_header_string(value) then
+    return value
+  end
+
+  if type(value) == "table" then
+    for i = 1, #value do
+      if is_header_string(value[i]) then
+        return value[i]
+      end
+    end
+  end
+end
+
+local function merge_header_values(value, separator)
+  if is_header_string(value) then
+    return value
+  end
+
+  if type(value) ~= "table" then
+    return nil
+  end
+
+  local merged = {}
+  for i = 1, #value do
+    if is_header_string(value[i]) then
+      merged[#merged + 1] = value[i]
+    end
+  end
+
+  if #merged == 0 then
+    return nil
+  end
+
+  return table.concat(merged, separator)
+end
 
 -- Check if string starts with specific prefix
 local function starts_with(value, start)
@@ -29,7 +86,7 @@ end
 
 -- Trim X-Forwarded-For header by removing specified number of IPs from the right side
 local function trim_xff_header(xff_value, trim_count)
-  if not xff_value or trim_count <= 0 then
+  if not is_header_string(xff_value) or trim_count <= 0 then
     return xff_value
   end
 
@@ -37,9 +94,9 @@ local function trim_xff_header(xff_value, trim_count)
   local ips = {}
   for ip in string.gmatch(xff_value, "([^,]+)") do
     -- Trim whitespace from each IP
-    ip = string.match(ip, "^%s*(.-)%s*$")
-    if ip and ip ~= "" then
-      table.insert(ips, ip)
+    local trimmed_ip = string.match(ip, "^%s*(.-)%s*$")
+    if trimmed_ip and trimmed_ip ~= "" then
+      ips[#ips + 1] = trimmed_ip
     end
   end
 
@@ -55,48 +112,10 @@ local function trim_xff_header(xff_value, trim_count)
   -- Reconstruct the header with remaining IPs
   local trimmed_ips = {}
   for i = 1, keep_count do
-    table.insert(trimmed_ips, ips[i])
+    trimmed_ips[i] = ips[i]
   end
 
   return table.concat(trimmed_ips, ",")
-end
-
--- Collect all request data once
-local function collect_request_data(conf)
-  local data = {
-    method = kong.request.get_method(),
-    headers = kong.request.get_headers(),
-  }
-
-  -- Handle X-Forwarded-For trimming if configured
-  if conf.trim_xff_header_count and conf.trim_xff_header_count > 0 then
-    local xff_header = data.headers["x-forwarded-for"]
-    if xff_header then
-      local trimmed_xff = trim_xff_header(xff_header, conf.trim_xff_header_count)
-      -- Create a copy of headers to avoid modifying the original
-      local modified_headers = {}
-      for k, v in pairs(data.headers) do
-        modified_headers[k] = v
-      end
-      -- Update the X-Forwarded-For header with trimmed value
-      if trimmed_xff then
-        modified_headers["x-forwarded-for"] = trimmed_xff
-      else
-        modified_headers["x-forwarded-for"] = nil
-      end
-      data.headers = modified_headers
-    end
-  end
-
-  -- Get HTTP version from custom header or from Kong's request
-  if conf and conf.http_version_custom_header and conf.http_version_custom_header ~= '' then
-    data.http_version_custom_header = data.headers[string.lower(conf.http_version_custom_header)]
-    data.http_version = kong.request.get_http_version()
-  else
-    data.http_version = kong.request.get_http_version()
-  end
-
-  return data
 end
 
 -- Create a lookup table for ignored headers for performance
@@ -107,9 +126,164 @@ local function create_ignored_headers_lookup(ignore_headers)
 
   local lookup = {}
   for _, header in ipairs(ignore_headers) do
-    lookup[string.lower(header)] = true
+    if type(header) == "string" then
+      local trimmed_header = string.match(header, "^%s*(.-)%s*$")
+      if trimmed_header ~= "" then
+        lookup[normalize_header_name(trimmed_header)] = true
+      end
+    end
   end
   return lookup
+end
+
+local function collect_request_data_from_raw(conf, ignored_headers_lookup)
+  local request_data = {
+    method = kong.request.get_method(),
+    http_version = kong.request.get_http_version(),
+    cookie_header = nil,
+    referer = nil,
+    accept_language = nil,
+    http_version_custom_header = nil,
+    ordered_header_names = {},
+    header_count = 0,
+  }
+
+  local raw_headers = get_raw_request_headers()
+  if not is_header_string(raw_headers) then
+    return
+  end
+
+  local custom_http_version_header
+  if conf and is_header_string(conf.http_version_custom_header) then
+    custom_http_version_header = normalize_header_name(conf.http_version_custom_header)
+  end
+
+  local xff_occurrences = {}
+
+  for line in string.gmatch(raw_headers, HEADER_LINE_PATTERN) do
+    local header_name, header_value = string.match(line, HEADER_NAME_PATTERN)
+    if header_name then
+      local normalized_name = normalize_header_name(header_name)
+
+      if normalized_name == "cookie" then
+        if request_data.cookie_header then
+          request_data.cookie_header = request_data.cookie_header .. "; " .. header_value
+        else
+          request_data.cookie_header = header_value
+        end
+
+      elseif normalized_name == "referer" then
+        if request_data.referer == nil then
+          request_data.referer = header_value
+        end
+
+      elseif normalized_name == "accept-language" then
+        if request_data.accept_language == nil then
+          request_data.accept_language = header_value
+        end
+
+      elseif normalized_name == "x-forwarded-for" then
+        xff_occurrences[#xff_occurrences + 1] = header_value
+      end
+
+      if custom_http_version_header and
+         normalized_name == custom_http_version_header and
+         request_data.http_version_custom_header == nil then
+        request_data.http_version_custom_header = header_value
+      end
+
+      if not starts_with(normalized_name, "cookie") and
+         normalized_name ~= "referer" and
+         not ignored_headers_lookup[normalized_name] then
+        request_data.header_count = request_data.header_count + 1
+        table.insert(request_data.ordered_header_names, normalized_name)
+      end
+    end
+  end
+
+  if #xff_occurrences > 0 then
+    request_data.x_forwarded_for = table.concat(xff_occurrences, ", ")
+    if conf.trim_xff_header_count and conf.trim_xff_header_count > 0 then
+      request_data.x_forwarded_for = trim_xff_header(
+        request_data.x_forwarded_for,
+        conf.trim_xff_header_count
+      )
+    end
+  end
+
+  if request_data.x_forwarded_for == nil and #xff_occurrences > 0 then
+    local filtered_header_names = {}
+    local removed = 0
+    for i = 1, #request_data.ordered_header_names do
+      local name = request_data.ordered_header_names[i]
+      if name == "x-forwarded-for" then
+        removed = removed + 1
+      else
+        filtered_header_names[#filtered_header_names + 1] = name
+      end
+    end
+    request_data.ordered_header_names = filtered_header_names
+    request_data.header_count = request_data.header_count - removed
+  end
+
+  return request_data
+end
+
+local function collect_request_data_from_headers(conf, ignored_headers_lookup)
+  local headers = kong.request.get_headers()
+  local request_data = {
+    method = kong.request.get_method(),
+    http_version = kong.request.get_http_version(),
+    cookie_header = merge_header_values(headers["cookie"], "; "),
+    referer = headers["referer"],
+    accept_language = first_header_value(headers["accept-language"]),
+    ordered_header_names = {},
+    header_count = 0,
+  }
+
+  if conf and is_header_string(conf.http_version_custom_header) then
+    local custom_header_value = headers[normalize_header_name(conf.http_version_custom_header)]
+    request_data.http_version_custom_header = first_header_value(custom_header_value)
+  end
+
+  local xff_header = merge_header_values(headers["x-forwarded-for"], ", ")
+  if xff_header then
+    request_data.x_forwarded_for = xff_header
+    if conf.trim_xff_header_count and conf.trim_xff_header_count > 0 then
+      request_data.x_forwarded_for = trim_xff_header(
+        request_data.x_forwarded_for,
+        conf.trim_xff_header_count
+      )
+    end
+  end
+
+  request_data.referer = first_header_value(request_data.referer)
+
+  for name, _ in pairs(headers) do
+    local normalized_name = normalize_header_name(name)
+    if not starts_with(normalized_name, "cookie") and
+       normalized_name ~= "referer" and
+       not ignored_headers_lookup[normalized_name] then
+      if normalized_name ~= "x-forwarded-for" or request_data.x_forwarded_for ~= nil then
+        request_data.header_count = request_data.header_count + 1
+        table.insert(request_data.ordered_header_names, normalized_name)
+      end
+    end
+  end
+
+  return request_data
+end
+
+-- Collect all request data once
+local function collect_request_data(conf)
+  local ignored_headers_lookup = create_ignored_headers_lookup(conf.ignore_headers)
+
+  local request_data = collect_request_data_from_raw(conf, ignored_headers_lookup)
+  if request_data then
+    return request_data, ignored_headers_lookup
+  end
+
+  return collect_request_data_from_headers(conf, ignored_headers_lookup), ignored_headers_lookup
 end
 
 -- Get HTTP version code
@@ -150,38 +324,20 @@ local function method_code(request_data)
   return string.sub(string.lower(request_data.method), 1, 2)
 end
 
--- Count headers excluding cookies, referer, and ignored headers (optimized with single loop)
-local function header_count_and_names(headers, ignored_headers_lookup)
-  local count = 0
-  local header_names = {}
-
-  for name, _ in pairs(headers) do
-    local lower_name = string.lower(name)
-    if not starts_with(lower_name, 'cookie') and  -- skip by standard
-       lower_name ~= 'referer' and                -- skip by standard
-       not ignored_headers_lookup[lower_name] then
-      count = count + 1
-      table.insert(header_names, lower_name)
-    end
-  end
-
-  return count, header_names
-end
-
 -- Check if referer header is set
-local function referer_is_set(headers)
-  return headers["referer"] and 'r' or 'n'
+local function referer_is_set(request_data)
+  return request_data.referer and 'r' or 'n'
 end
 
 -- Check if cookie header is set
-local function cookie_is_set(headers)
-  return headers["cookie"] and 'c' or 'n'
+local function cookie_is_set(request_data)
+  return request_data.cookie_header and 'c' or 'n'
 end
 
 -- Get first 4 characters of accept-language header (alphanumeric only)
-local function accept_lang_beg(headers)
-  local al = headers["accept-language"]
-  if not al then
+local function accept_lang_beg(request_data)
+  local al = request_data.accept_language
+  if not is_header_string(al) then
     return DEFAULT_LANG
   end
 
@@ -195,7 +351,7 @@ end
 
 -- Parse cookies and get both sorted names and name=value pairs (combined for efficiency)
 local function parse_cookies(cookie_header)
-  if not cookie_header then
+  if not is_header_string(cookie_header) then
     return '', ''
   end
 
@@ -236,30 +392,23 @@ end
 local function generate_ja4h_fingerprint(conf)
   -- Collect all request data once
   local request_data = collect_request_data(conf)
-  local headers = request_data.headers
-  local cookie_header = headers["cookie"]
-
-  -- Create ignored headers lookup table
-  local ignored_headers_lookup = create_ignored_headers_lookup(conf.ignore_headers)
 
   -- Get basic components
   local p1 = method_code(request_data)
   local p2 = http_version(request_data)
-  local p3 = cookie_is_set(headers)
-  local p4 = referer_is_set(headers)
-  local p6 = accept_lang_beg(headers)
+  local p3 = cookie_is_set(request_data)
+  local p4 = referer_is_set(request_data)
+  local p6 = accept_lang_beg(request_data)
 
-  -- Combined header processing with ignored headers filtering
-  local header_count_val, header_names = header_count_and_names(headers, ignored_headers_lookup)
   -- Cap header count at 99 per requirement (clients with >=99 headers are treated as 99)
-  local capped_header_count = header_count_val > 99 and 99 or header_count_val
+  local capped_header_count = request_data.header_count > 99 and 99 or request_data.header_count
   local p5 = tostring(capped_header_count)
 
   -- Combined cookie processing
-  local p8_pretty, p9_pretty = parse_cookies(cookie_header)
+  local p8_pretty, p9_pretty = parse_cookies(request_data.cookie_header)
 
   -- Generate hashes
-  local p7_pretty = table.concat(header_names, ',')
+  local p7_pretty = table.concat(request_data.ordered_header_names, ',')
   local p7 = truncated_sha256(p7_pretty)
   local p8 = truncated_sha256(p8_pretty)
   local p9 = truncated_sha256(p9_pretty)
